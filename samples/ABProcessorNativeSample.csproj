@@ -3,12 +3,17 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net6.0</TargetFramework>
-    <LangVersion>6.0</LangVersion>
-    <RootNamespace>ABProcessor.Samples</RootNamespace>
+    <RootNamespace>ABProcessor.Native.Samples</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\ABProcessor.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="ABProcessorNative.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

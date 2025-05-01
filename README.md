@@ -132,19 +132,36 @@ AssetBundleProcessor noCompressionProcessor = new AssetBundleProcessor(
 );
 ```
 
-### 使用C++原生方法
+### 使用C++高性能版本
 
 ```csharp
-// 检查原生库是否可用
-bool isNativeAvailable = ABProcessorNative.IsNativeLibraryAvailable();
-Console.WriteLine($"原生库是否可用: {isNativeAvailable}");
-
-// 直接使用原生方法（通常不需要直接调用，ABProcessor会自动使用）
-if (isNativeAvailable)
+// 创建C++版本的处理器
+using (ABProcessorNative processor = new ABProcessorNative(
+    outputPath: "D:/Output",
+    compressionLevel: System.IO.Compression.CompressionLevel.Optimal,
+    useEncryption: false,
+    encryptionKey: null,
+    compressionType: UnityCompressionType.LZ4,
+    unityVersion: "2019.4.0f1"))
 {
-    byte[] data = File.ReadAllBytes("D:/Assets/Texture1.png");
-    byte[] compressed = ABProcessorNative.CompressData(data, UnityCompressionType.LZ4);
-    Console.WriteLine($"压缩后大小: {compressed.Length} 字节");
+    // 创建AssetBundle
+    List<string> files = new List<string>
+    {
+        "D:/Assets/Texture1.png",
+        "D:/Assets/Model1.fbx",
+        "D:/Assets/Config.json"
+    };
+    
+    string bundlePath = processor.CreateAssetBundle("my_bundle", files);
+    Console.WriteLine($"AssetBundle已创建: {bundlePath}");
+    
+    // 解包AssetBundle
+    List<string> extractedFiles = processor.ExtractAssetBundle(
+        bundlePath, 
+        "D:/Extract"
+    );
+    
+    Console.WriteLine($"已解包 {extractedFiles.Count} 个文件");
 }
 ```
 
@@ -180,7 +197,7 @@ cp libABProcessorNative.so ../../bin/Debug/netstandard2.0/
 
 ## 许可证
 
-本项目采用MIT许可证。详情请参阅LICENSE文件。
+本项目采用Apache 2.0许可证。详情请参阅LICENSE文件。
 
 ## 贡献
 
