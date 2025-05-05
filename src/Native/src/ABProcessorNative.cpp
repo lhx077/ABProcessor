@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include <string>
 #include <vector>
 #include <fstream>
@@ -15,8 +16,8 @@
 #include "lz4.h"
 #include "lz4hc.h"
 #include "lzma.h"
-#include "openssl/aes.h"
-#include "openssl/md5.h"
+#include <openssl/evp.h>
+#include <openssl/md5.h>
 
 #ifdef _WIN32
 #define EXPORT_API __declspec(dllexport)
@@ -580,10 +581,17 @@ AssetBundleProcessor::AssetBundleProcessor(
 {
     // 处理加密密钥
     if (_useEncryption && !encryptionKey.empty()) {
-        // 计算MD5哈希作为AES密钥
-        unsigned char md5Result[MD5_DIGEST_LENGTH];
-        MD5(reinterpret_cast<const unsigned char*>(encryptionKey.c_str()), encryptionKey.length(), md5Result);
-        _encryptionKey.assign(md5Result, md5Result + MD5_DIGEST_LENGTH);
+        // 使用EVP_MD_CTX进行MD5计算
+        EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
+        unsigned char md5Result[EVP_MAX_MD_SIZE];
+        unsigned int md_len;
+
+        EVP_DigestInit_ex(mdctx, EVP_md5(), NULL);
+        EVP_DigestUpdate(mdctx, encryptionKey.c_str(), encryptionKey.length());
+        EVP_DigestFinal_ex(mdctx, md5Result, &md_len);
+        EVP_MD_CTX_free(mdctx);
+
+        _encryptionKey.assign(md5Result, md5Result + md_len);
     }
     
     // 确保输出目录存在
@@ -952,9 +960,9 @@ std::vector<uint8_t> AssetBundleProcessor::EncryptData(const std::vector<uint8_t
         return data;
     }
     
-    // 使用AES-128-ECB模式加密
-    AES_KEY aesKey;
-    AES_set_encrypt_key(_encryptionKey.data(), 128, &aesKey);
+    // 使用EVP接口进行AES-128-ECB加密
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    EVP_EncryptInit_ex(ctx, EVP_aes_128_ecb(), NULL, _encryptionKey.data(), NULL);
     
     // 确保数据长度是16字节的倍数（AES块大小）
     size_t paddedSize = (data.size() + 15) & ~15;
@@ -962,14 +970,14 @@ std::vector<uint8_t> AssetBundleProcessor::EncryptData(const std::vector<uint8_t
     std::copy(data.begin(), data.end(), paddedData.begin());
     
     // 加密数据
-    std::vector<uint8_t> encryptedData(paddedSize);
-    for (size_t i = 0; i < paddedSize; i += 16) {
-        AES_encrypt(
-            paddedData.data() + i,
-            encryptedData.data() + i,
-            &aesKey
-        );
-    }
+    std::vector<uint8_t> encryptedData(paddedSize + EVP_MAX_BLOCK_LENGTH);
+    int outlen1, outlen2;
+    
+    EVP_EncryptUpdate(ctx, encryptedData.data(), &outlen1, paddedData.data(), static_cast<int>(paddedSize));
+    EVP_EncryptFinal_ex(ctx, encryptedData.data() + outlen1, &outlen2);
+    
+    encryptedData.resize(outlen1 + outlen2);
+    EVP_CIPHER_CTX_free(ctx);
     
     return encryptedData;
 }
@@ -980,24 +988,25 @@ std::vector<uint8_t> AssetBundleProcessor::DecryptData(const std::vector<uint8_t
         return data;
     }
     
-    // 使用AES-128-ECB模式解密
-    AES_KEY aesKey;
-    AES_set_decrypt_key(_encryptionKey.data(), 128, &aesKey);
+    // 使用EVP接口进行AES-128-ECB解密
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    EVP_DecryptInit_ex(ctx, EVP_aes_128_ecb(), NULL, _encryptionKey.data(), NULL);
     
     // 确保数据长度是16字节的倍数（AES块大小）
     if (data.size() % 16 != 0) {
+        EVP_CIPHER_CTX_free(ctx);
         throw std::runtime_error("加密数据长度必须是16字节的倍数");
     }
     
     // 解密数据
-    std::vector<uint8_t> decryptedData(data.size());
-    for (size_t i = 0; i < data.size(); i += 16) {
-        AES_decrypt(
-            data.data() + i,
-            decryptedData.data() + i,
-            &aesKey
-        );
-    }
+    std::vector<uint8_t> decryptedData(data.size() + EVP_MAX_BLOCK_LENGTH);
+    int outlen1, outlen2;
+    
+    EVP_DecryptUpdate(ctx, decryptedData.data(), &outlen1, data.data(), static_cast<int>(data.size()));
+    EVP_DecryptFinal_ex(ctx, decryptedData.data() + outlen1, &outlen2);
+    
+    decryptedData.resize(outlen1 + outlen2);
+    EVP_CIPHER_CTX_free(ctx);
     
     return decryptedData;
 }
