@@ -8,16 +8,38 @@ on:
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
     - uses: actions/checkout@v4
-    - name: configure
-      run: ./src/Native/ABProcessorNative.cpp
-    - name: make
-      run: make
-    - name: make check
-      run: make check
-    - name: make distcheck
-      run: make distcheck
+
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v1.1
+
+    - name: Setup vcpkg
+      run: |
+        git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+        C:\vcpkg\bootstrap-vcpkg.bat
+        C:\vcpkg\vcpkg integrate install
+
+    - name: Install dependencies
+      run: |
+        C:\vcpkg\vcpkg install lz4:x64-windows
+        C:\vcpkg\vcpkg install liblzma:x64-windows
+        C:\vcpkg\vcpkg install openssl:x64-windows
+
+    - name: Create build directory
+      run: mkdir build
+
+    - name: Build
+      working-directory: ${{github.workspace}}
+      run: |
+        msbuild /p:Configuration=Release /p:Platform=x64 src/Native/ABProcessorNative.vcxproj
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ABProcessorNative
+        path: |
+          bin/x64/Release/ABProcessorNative.dll
+          bin/x64/Release/*.dll
