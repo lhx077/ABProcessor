@@ -100,7 +100,7 @@ public:
     {}
     
     // 序列化块信息
-    void Serialize(std::vector<uint8_t>& buffer);
+    void Serialize(std::vector<uint8_t>& buffer) const;
     
     // 从二进制数据解析块信息
     static BlockInfo Deserialize(const std::vector<uint8_t>& data, size_t& offset);
@@ -122,7 +122,7 @@ public:
     {}
     
     // 序列化文件信息
-    void Serialize(std::vector<uint8_t>& buffer);
+    void Serialize(std::vector<uint8_t>& buffer) const;
     
     // 从二进制数据解析文件信息
     static AssetBundleFileInfo Deserialize(const std::vector<uint8_t>& data, size_t& offset);
@@ -487,7 +487,7 @@ UnityAssetBundleHeader UnityAssetBundleHeader::DeserializeHeader(const std::vect
 }
 
 // 序列化块信息
-void BlockInfo::Serialize(std::vector<uint8_t>& buffer) {
+void BlockInfo::Serialize(std::vector<uint8_t>& buffer) const {
     // 写入压缩大小
     buffer.resize(buffer.size() + sizeof(uint32_t));
     std::memcpy(buffer.data() + buffer.size() - sizeof(uint32_t), &CompressedSize, sizeof(uint32_t));
@@ -521,7 +521,7 @@ BlockInfo BlockInfo::Deserialize(const std::vector<uint8_t>& data, size_t& offse
 }
 
 // 序列化文件信息
-void AssetBundleFileInfo::Serialize(std::vector<uint8_t>& buffer) {
+void AssetBundleFileInfo::Serialize(std::vector<uint8_t>& buffer) const {
     // 写入路径
     size_t pathLength = Path.length();
     buffer.push_back(static_cast<uint8_t>(pathLength));
@@ -698,8 +698,9 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
     outputFile.write(reinterpret_cast<const char*>(&blockCount), sizeof(uint32_t));
     
     // 写入块信息
-    blockInfo.Serialize(std::vector<uint8_t>& buffer);
-    outputFile.write(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+    std::vector<uint8_t> blockInfoBuffer;
+    blockInfo.Serialize(blockInfoBuffer);
+    outputFile.write(reinterpret_cast<const char*>(blockInfoBuffer.data()), blockInfoBuffer.size());
     
     // 写入文件信息
     outputFile.write(reinterpret_cast<const char*>(fileInfoData.data()), fileInfoData.size());
@@ -708,15 +709,26 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
     outputFile.write(reinterpret_cast<const char*>(compressedData.data()), compressedData.size());
     
     // 计算CRC
-    outputFile.seekp(0, std::ios::beg);
+    outputFile.close();
+    std::ifstream inputFile(bundlePath, std::ios::binary);
+    if (!inputFile) {
+        throw std::runtime_error("无法读取文件以计算CRC: " + bundlePath);
+    }
+    
     std::vector<uint8_t> fileContent(header.FileSize);
-    outputFile.read(reinterpret_cast<char*>(fileContent.data()), fileContent.size());
+    inputFile.read(reinterpret_cast<char*>(fileContent.data()), fileContent.size());
     header.CRC = CalculateCRC(fileContent);
+    inputFile.close();
     
     // 更新CRC
-    outputFile.seekp(0, std::ios::beg);
+    std::ofstream updateFile(bundlePath, std::ios::binary | std::ios::in | std::ios::out);
+    if (!updateFile) {
+        throw std::runtime_error("无法更新文件CRC: " + bundlePath);
+    }
+    
     headerData = header.SerializeHeader();
-    outputFile.write(reinterpret_cast<const char*>(headerData.data()), headerData.size());
+    updateFile.write(reinterpret_cast<const char*>(headerData.data()), headerData.size());
+    updateFile.close();
     
     return bundlePath;
 }
