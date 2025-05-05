@@ -37,9 +37,10 @@ jobs:
         msbuild /p:Configuration=Release /p:Platform=x64 src/Native/ABProcessorNative.vcxproj
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ABProcessorNative
         path: |
           bin/x64/Release/ABProcessorNative.dll
           bin/x64/Release/*.dll
+        compression-level: 9
