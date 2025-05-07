@@ -1,3 +1,4 @@
+// 文件使用UTF-8编码，解决代码页936问题
 #define _CRT_SECURE_NO_WARNINGS
 #include <string>
 #include <vector>
@@ -146,12 +147,6 @@ private:
     // 解压数据
     std::vector<uint8_t> DecompressData(const std::vector<uint8_t>& data, UnityCompressionType compressionType);
     
-    // 计算数据哈希值
-    uint64_t ComputeHash(const std::vector<uint8_t>& data);
-    
-    // 计算CRC校验和
-    uint32_t CalculateCRC(const std::vector<uint8_t>& data);
-    
     // LZMA压缩/解压
     std::vector<uint8_t> CompressLZMA(const std::vector<uint8_t>& data);
     std::vector<uint8_t> DecompressLZMA(const std::vector<uint8_t>& data);
@@ -296,8 +291,12 @@ EXPORT_API const char** ExtractAssetBundle(
         // 分配内存存储文件路径
         char** result = new char*[extractedFiles.size()];
         for (size_t i = 0; i < extractedFiles.size(); ++i) {
-            result[i] = new char[extractedFiles[i].length() + 1];
-            std::strcpy(result[i], extractedFiles[i].c_str());
+            // 确保分配足够的内存空间，包括字符串结束符
+            size_t len = extractedFiles[i].length();
+            result[i] = new char[len + 1];
+            // 安全地复制字符串
+            strncpy(result[i], extractedFiles[i].c_str(), len);
+            result[i][len] = '\0'; // 确保字符串正确终止
         }
         
         *resultLength = static_cast<int>(extractedFiles.size());
@@ -322,8 +321,18 @@ EXPORT_API void GetExtractedFiles(
     }
     
     for (int i = 0; i < resultLength; ++i) {
-        if (resultPtr[i]) {
-            std::strcpy(result[i], resultPtr[i]);
+        if (resultPtr[i] && result[i]) { // 确保源和目标指针都有效
+            // 获取源字符串长度
+            size_t len = strlen(resultPtr[i]);
+            // 假设result[i]已经分配了足够的内存
+            // 使用安全的字符串复制函数，确保不会超出目标缓冲区
+            // 注意：这里假设result[i]的大小至少为len+1
+            if (len > 0) {
+                memcpy(result[i], resultPtr[i], len);
+                result[i][len] = '\0'; // 确保字符串正确终止
+            } else {
+                result[i][0] = '\0'; // 空字符串情况
+            }
         }
     }
 }
@@ -687,7 +696,7 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
     header.FileSize = header.HeaderSize + header.BlocksInfoSize + compressedData.size();
     
     // 计算未压缩数据哈希
-    header.UncompressedDataHash = ComputeHash(fileData);
+    header.UncompressedDataHash = CalculateHash(fileData);
     
     // 序列化头部
     std::vector<uint8_t> headerData = header.SerializeHeader();
@@ -725,7 +734,7 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
     
     std::vector<uint8_t> fileContent(header.FileSize);
     inputFile.read(reinterpret_cast<char*>(fileContent.data()), fileContent.size());
-    header.CRC = CalculateCRC(fileContent);
+    header.CRC = CalculateCRC32(fileContent);
     inputFile.close();
     
     // 更新CRC
@@ -1070,4 +1079,33 @@ uint64_t AssetBundleProcessor::CalculateHash(const std::vector<uint8_t>& data) {
     }
     
     return hash;
+}
+
+// 压缩数据 - 根据压缩类型选择合适的压缩方法
+std::vector<uint8_t> AssetBundleProcessor::CompressData(const std::vector<uint8_t>& data, UnityCompressionType compressionType) {
+    switch (compressionType) {
+        case UnityCompressionType::LZMA:
+            return CompressLZMA(data);
+        case UnityCompressionType::LZ4:
+            return CompressLZ4(data);
+        case UnityCompressionType::LZ4HC:
+            return CompressLZ4HC(data);
+        case UnityCompressionType::None:
+        default:
+            return data;
+    }
+}
+
+// 解压数据 - 根据压缩类型选择合适的解压方法
+std::vector<uint8_t> AssetBundleProcessor::DecompressData(const std::vector<uint8_t>& data, UnityCompressionType compressionType) {
+    switch (compressionType) {
+        case UnityCompressionType::LZMA:
+            return DecompressLZMA(data);
+        case UnityCompressionType::LZ4:
+        case UnityCompressionType::LZ4HC:
+            return DecompressLZ4(data);
+        case UnityCompressionType::None:
+        default:
+            return data;
+    }
 }
