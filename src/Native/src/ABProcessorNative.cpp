@@ -219,7 +219,7 @@ EXPORT_API AssetBundleProcessor* CreateProcessor(
             unityVersion ? unityVersion : "2019.4.0f1");
     }
     catch (const std::exception& e) {
-        std::cerr << "创建处理器失败: " << e.what() << std::endl;
+        std::cerr << "Failed to create processor: " << e.what() << std::endl;
         return nullptr;
     }
 }
@@ -302,8 +302,8 @@ EXPORT_API const char** ExtractAssetBundle(
         *resultLength = static_cast<int>(extractedFiles.size());
         return const_cast<const char**>(result);
     }
-    catch (const std::exception& e) {
-        std::cerr << "解包AssetBundle失败: " << e.what() << std::endl;
+    catch (const std::exception& ex) {
+        std::cerr << "Failed to extract AssetBundle: " << ex.what() << std::endl;
         *fileCount = 0;
         *resultLength = 0;
         return nullptr;
@@ -612,7 +612,7 @@ AssetBundleProcessor::AssetBundleProcessor(
 // 创建AssetBundle
 std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleName, const std::vector<std::string>& files) {
     if (files.empty()) {
-        throw std::invalid_argument("文件列表不能为空");
+        throw std::invalid_argument("File list cannot be empty");
     }
     
     // 创建输出路径
@@ -627,7 +627,7 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
         // 读取文件
         std::ifstream file(filePath, std::ios::binary);
         if (!file) {
-            throw std::runtime_error("无法打开文件: " + filePath);
+            throw std::runtime_error("Unable to open file: " + filePath);
         }
         
         // 获取文件大小
@@ -704,7 +704,7 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
     // 创建输出文件
     std::ofstream outputFile(bundlePath, std::ios::binary);
     if (!outputFile) {
-        throw std::runtime_error("无法创建输出文件: " + bundlePath);
+        throw std::runtime_error("Unable to create output file: " + bundlePath);
     }
     
     // 写入头部
@@ -729,7 +729,7 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
     outputFile.close();
     std::ifstream inputFile(bundlePath, std::ios::binary);
     if (!inputFile) {
-        throw std::runtime_error("无法读取文件以计算CRC: " + bundlePath);
+        throw std::runtime_error("Unable to read file to calculate CRC: " + bundlePath);
     }
     
     std::vector<uint8_t> fileContent(header.FileSize);
@@ -740,7 +740,7 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
     // 更新CRC
     std::ofstream updateFile(bundlePath, std::ios::binary | std::ios::in | std::ios::out);
     if (!updateFile) {
-        throw std::runtime_error("无法更新文件CRC: " + bundlePath);
+        throw std::runtime_error("Unable to update file CRC: " + bundlePath);
     }
     
     headerData = header.SerializeHeader();
@@ -755,7 +755,7 @@ std::vector<std::string> AssetBundleProcessor::ExtractAssetBundle(const std::str
     // 检查文件是否存在
     std::ifstream file(bundlePath, std::ios::binary);
     if (!file) {
-        throw std::runtime_error("AssetBundle文件不存在: " + bundlePath);
+        throw std::runtime_error("AssetBundle file does not exist: " + bundlePath);
     }
     
     // 确保提取目录存在
@@ -763,75 +763,124 @@ std::vector<std::string> AssetBundleProcessor::ExtractAssetBundle(const std::str
     
     std::vector<std::string> extractedFiles;
     
-    // 读取头部
-    std::vector<uint8_t> headerData(64); // 头部大小通常为64字节
-    file.read(reinterpret_cast<char*>(headerData.data()), headerData.size());
-    UnityAssetBundleHeader header = UnityAssetBundleHeader::DeserializeHeader(headerData);
-    
-    // 读取块数量
-    uint32_t blockCount;
-    file.read(reinterpret_cast<char*>(&blockCount), sizeof(uint32_t));
-    
-    // 读取块信息
-    std::vector<BlockInfo> blocks;
-    for (uint32_t i = 0; i < blockCount; ++i) {
+    try {
+        // 读取头部
+        std::vector<uint8_t> headerData(128); // 头部大小最大读取128字节，确保足够
+        file.read(reinterpret_cast<char*>(headerData.data()), headerData.size());
+        UnityAssetBundleHeader header = UnityAssetBundleHeader::DeserializeHeader(headerData);
+        
+        // 读取压缩的块信息
+        int blocksInfoOffset = header.HeaderSize; // 使用真实头部大小
+        file.seekg(blocksInfoOffset, std::ios::beg);
+        
+        std::vector<uint8_t> compressedBlocksInfo(header.BlocksInfoSize);
+        file.read(reinterpret_cast<char*>(compressedBlocksInfo.data()), compressedBlocksInfo.size());
+        
+        // 解压块信息 - 块信息通常使用LZ4压缩
+        std::vector<uint8_t> blocksInfoBytes = DecompressData(compressedBlocksInfo, UnityCompressionType::LZ4);
+        
+        // 从解压后的块信息中读取块和文件信息
         size_t offset = 0;
-        std::vector<uint8_t> blockData(sizeof(uint32_t) * 2 + sizeof(uint16_t));
-        file.read(reinterpret_cast<char*>(blockData.data()), blockData.size());
-        blocks.push_back(BlockInfo::Deserialize(blockData, offset));
-    }
-    
-    // 读取文件数量
-    uint32_t fileCount;
-    file.read(reinterpret_cast<char*>(&fileCount), sizeof(uint32_t));
-    
-    // 读取文件信息
-    std::vector<AssetBundleFileInfo> fileInfos;
-    for (uint32_t i = 0; i < fileCount; ++i) {
-        // 读取路径长度
-        uint8_t pathLength;
-        file.read(reinterpret_cast<char*>(&pathLength), sizeof(uint8_t));
         
-        // 读取路径
-        std::vector<char> pathBuffer(pathLength);
-        file.read(pathBuffer.data(), pathLength);
+        // 读取未压缩大小
+        uint32_t uncompressedSize = *reinterpret_cast<const uint32_t*>(blocksInfoBytes.data() + offset);
+        offset += sizeof(uint32_t);
         
-        // 读取偏移量、大小和标志
-        AssetBundleFileInfo fileInfo;
-        fileInfo.Path = std::string(pathBuffer.data(), pathLength);
-        file.read(reinterpret_cast<char*>(&fileInfo.Offset), sizeof(uint64_t));
-        file.read(reinterpret_cast<char*>(&fileInfo.Size), sizeof(uint64_t));
-        file.read(reinterpret_cast<char*>(&fileInfo.Flags), sizeof(uint32_t));
+        // 读取块数量
+        uint32_t blockCount = *reinterpret_cast<const uint32_t*>(blocksInfoBytes.data() + offset);
+        offset += sizeof(uint32_t);
         
-        fileInfos.push_back(fileInfo);
-    }
-    
-    // 读取压缩数据
-    std::vector<uint8_t> compressedData(blocks[0].CompressedSize);
-    file.read(reinterpret_cast<char*>(compressedData.data()), compressedData.size());
-    
-    // 如果数据已加密，则解密
-    if (header.IsEncrypted) {
-        compressedData = DecryptData(compressedData);
-    }
-    
-    // 解压数据
-    std::vector<uint8_t> decompressedData = DecompressData(compressedData, header.CompressionType);
-    
-    // 提取文件
-    for (const auto& fileInfo : fileInfos) {
-        std::string outputPath = extractPath + "/" + fileInfo.Path;
-        std::ofstream outputFile(outputPath, std::ios::binary);
-        if (!outputFile) {
-            throw std::runtime_error("无法创建输出文件: " + outputPath);
+        // 读取块信息
+        std::vector<BlockInfo> blocks;
+        for (uint32_t i = 0; i < blockCount; ++i) {
+            BlockInfo block;
+            block.CompressedSize = *reinterpret_cast<const uint32_t*>(blocksInfoBytes.data() + offset);
+            offset += sizeof(uint32_t);
+            
+            block.UncompressedSize = *reinterpret_cast<const uint32_t*>(blocksInfoBytes.data() + offset);
+            offset += sizeof(uint32_t);
+            
+            block.Flags = *reinterpret_cast<const uint16_t*>(blocksInfoBytes.data() + offset);
+            offset += sizeof(uint16_t);
+            
+            blocks.push_back(block);
         }
         
-        // 写入文件内容
-        outputFile.write(reinterpret_cast<const char*>(decompressedData.data() + fileInfo.Offset), fileInfo.Size);
-        extractedFiles.push_back(outputPath);
+        // 读取文件数量
+        uint32_t fileCount = *reinterpret_cast<const uint32_t*>(blocksInfoBytes.data() + offset);
+        offset += sizeof(uint32_t);
+        
+        // 读取文件信息
+        std::vector<AssetBundleFileInfo> fileInfos;
+        for (uint32_t i = 0; i < fileCount; ++i) {
+            AssetBundleFileInfo fileInfo;
+            
+            // 读取路径长度
+            uint8_t pathLength = blocksInfoBytes[offset++];
+            
+            // 读取路径
+            fileInfo.Path = std::string(reinterpret_cast<const char*>(blocksInfoBytes.data() + offset), pathLength);
+            offset += pathLength;
+            
+            // 读取偏移量、大小和标志
+            fileInfo.Offset = *reinterpret_cast<const uint64_t*>(blocksInfoBytes.data() + offset);
+            offset += sizeof(uint64_t);
+            
+            fileInfo.Size = *reinterpret_cast<const uint64_t*>(blocksInfoBytes.data() + offset);
+            offset += sizeof(uint64_t);
+            
+            fileInfo.Flags = *reinterpret_cast<const uint32_t*>(blocksInfoBytes.data() + offset);
+            offset += sizeof(uint32_t);
+            
+            fileInfos.push_back(fileInfo);
+        }
+        
+        // 读取压缩数据块
+        int dataOffset = blocksInfoOffset + static_cast<int>(header.BlocksInfoSize);
+        file.seekg(dataOffset, std::ios::beg);
+        
+        std::vector<uint8_t> compressedData(blocks[0].CompressedSize);
+        file.read(reinterpret_cast<char*>(compressedData.data()), compressedData.size());
+        
+        // 如果数据已加密，则解密
+        if (header.IsEncrypted && _useEncryption) {
+            compressedData = DecryptData(compressedData);
+        }
+        
+        // 解压数据
+        std::vector<uint8_t> bundleData = DecompressData(compressedData, header.CompressionType);
+        
+        // 验证解压后大小
+        if (bundleData.size() != blocks[0].UncompressedSize) {
+            throw std::runtime_error("Decompressed size mismatch: expected " + std::to_string(blocks[0].UncompressedSize) + " bytes, actual " + std::to_string(bundleData.size()) + " bytes");
+        }
+        
+        // 提取文件
+        for (const auto& fileInfo : fileInfos) {
+            if (fileInfo.Offset + fileInfo.Size > bundleData.size()) {
+                throw std::runtime_error("File offset out of range: " + fileInfo.Path);
+            }
+            
+            std::string outputPath = extractPath + "/" + fileInfo.Path;
+            
+            // 确保目录存在
+            std::filesystem::create_directories(std::filesystem::path(outputPath).parent_path());
+            
+            std::ofstream outputFile(outputPath, std::ios::binary);
+            if (!outputFile) {
+                throw std::runtime_error("Cannot create output file: " + outputPath);
+            }
+            
+            // 写入文件内容
+            outputFile.write(reinterpret_cast<const char*>(bundleData.data() + fileInfo.Offset), fileInfo.Size);
+            extractedFiles.push_back(outputPath);
+        }
+        
+        return extractedFiles;
     }
-    
-    return extractedFiles;
+    catch (const std::exception& ex) {
+        throw std::runtime_error("Failed to extract AssetBundle: " + std::string(ex.what()));
+    }
 }
 
 // 使用LZMA压缩数据
@@ -843,7 +892,7 @@ std::vector<uint8_t> AssetBundleProcessor::CompressLZMA(const std::vector<uint8_
     lzma_stream strm = LZMA_STREAM_INIT;
     lzma_ret ret = lzma_alone_encoder(&strm, &options);
     if (ret != LZMA_OK) {
-        throw std::runtime_error("LZMA编码器初始化失败");
+        throw std::runtime_error("LZMA encoder initialization failed");
     }
     
     // 预估压缩后的大小
@@ -858,7 +907,7 @@ std::vector<uint8_t> AssetBundleProcessor::CompressLZMA(const std::vector<uint8_
     ret = lzma_code(&strm, LZMA_FINISH);
     if (ret != LZMA_STREAM_END) {
         lzma_end(&strm);
-        throw std::runtime_error("LZMA压缩失败");
+        throw std::runtime_error("LZMA compression failed");
     }
     
     // 调整输出缓冲区大小为实际压缩大小
@@ -874,7 +923,7 @@ std::vector<uint8_t> AssetBundleProcessor::DecompressLZMA(const std::vector<uint
     lzma_stream strm = LZMA_STREAM_INIT;
     lzma_ret ret = lzma_alone_decoder(&strm, UINT64_MAX);
     if (ret != LZMA_OK) {
-        throw std::runtime_error("LZMA解码器初始化失败");
+        throw std::runtime_error("LZMA decoder initialization failed");
     }
     
     // 预估解压后的大小（通常是压缩数据的4-10倍）
@@ -889,7 +938,7 @@ std::vector<uint8_t> AssetBundleProcessor::DecompressLZMA(const std::vector<uint
     ret = lzma_code(&strm, LZMA_FINISH);
     if (ret != LZMA_STREAM_END) {
         lzma_end(&strm);
-        throw std::runtime_error("LZMA解压失败");
+        throw std::runtime_error("LZMA decompression failed");
     }
     
     // 调整输出缓冲区大小为实际解压大小
@@ -901,65 +950,120 @@ std::vector<uint8_t> AssetBundleProcessor::DecompressLZMA(const std::vector<uint
 
 // 使用LZ4压缩数据
 std::vector<uint8_t> AssetBundleProcessor::CompressLZ4(const std::vector<uint8_t>& data) {
-    // LZ4压缩实现
+    // 为压缩数据分配内存
     int maxCompressedSize = LZ4_compressBound(static_cast<int>(data.size()));
-    std::vector<uint8_t> compressedData(maxCompressedSize);
+    std::vector<uint8_t> compressedBuffer(maxCompressedSize);
     
+    // 压缩数据
     int compressedSize = LZ4_compress_default(
         reinterpret_cast<const char*>(data.data()),
-        reinterpret_cast<char*>(compressedData.data()),
+        reinterpret_cast<char*>(compressedBuffer.data()),
         static_cast<int>(data.size()),
         maxCompressedSize
     );
     
     if (compressedSize <= 0) {
-        throw std::runtime_error("LZ4压缩失败");
+        throw std::runtime_error("LZ4 compression failed");
     }
     
-    compressedData.resize(compressedSize);
-    return compressedData;
+    // 创建结果缓冲区，包含头部和压缩数据
+    // Unity LZ4格式: 魔数(4字节) + 未压缩大小(4字节) + 压缩数据
+    std::vector<uint8_t> result(8 + compressedSize);
+    
+    // 写入Unity LZ4魔数 (0x184D2204) - 小端序
+    result[0] = 0x04;
+    result[1] = 0x22;
+    result[2] = 0x4D;
+    result[3] = 0x18;
+    
+    // 写入未压缩大小（4字节，小端序）
+    uint32_t dataSize = static_cast<uint32_t>(data.size());
+    memcpy(result.data() + 4, &dataSize, sizeof(uint32_t));
+    
+    // 复制压缩数据
+    memcpy(result.data() + 8, compressedBuffer.data(), compressedSize);
+    
+    return result;
 }
 
 // 使用LZ4HC压缩数据
 std::vector<uint8_t> AssetBundleProcessor::CompressLZ4HC(const std::vector<uint8_t>& data) {
-    // LZ4HC压缩实现
+    // 为压缩数据分配内存
     int maxCompressedSize = LZ4_compressBound(static_cast<int>(data.size()));
-    std::vector<uint8_t> compressedData(maxCompressedSize);
+    std::vector<uint8_t> compressedBuffer(maxCompressedSize);
     
+    // 使用高压缩比压缩数据
     int compressedSize = LZ4_compress_HC(
         reinterpret_cast<const char*>(data.data()),
-        reinterpret_cast<char*>(compressedData.data()),
+        reinterpret_cast<char*>(compressedBuffer.data()),
         static_cast<int>(data.size()),
         maxCompressedSize,
         _compressionLevel
     );
     
     if (compressedSize <= 0) {
-        throw std::runtime_error("LZ4HC压缩失败");
+        throw std::runtime_error("LZ4HC compression failed");
     }
     
-    compressedData.resize(compressedSize);
-    return compressedData;
+    // 创建结果缓冲区，包含头部和压缩数据
+    // Unity LZ4格式: 魔数(4字节) + 未压缩大小(4字节) + 压缩数据
+    std::vector<uint8_t> result(8 + compressedSize);
+    
+    // 写入Unity LZ4魔数 (0x184D2204) - 小端序
+    result[0] = 0x04;
+    result[1] = 0x22;
+    result[2] = 0x4D;
+    result[3] = 0x18;
+    
+    // 写入未压缩大小（4字节，小端序）
+    uint32_t dataSize = static_cast<uint32_t>(data.size());
+    memcpy(result.data() + 4, &dataSize, sizeof(uint32_t));
+    
+    // 复制压缩数据
+    memcpy(result.data() + 8, compressedBuffer.data(), compressedSize);
+    
+    return result;
 }
 
 // 解压LZ4数据
 std::vector<uint8_t> AssetBundleProcessor::DecompressLZ4(const std::vector<uint8_t>& data) {
-    // 获取原始大小（Unity AssetBundle中通常在块信息中存储）
-    int decompressedSize = static_cast<int>(data.size() * 4); // 估计值，实际应从块信息中获取
-    std::vector<uint8_t> decompressedData(decompressedSize);
+    // 至少需要8字节的头部（4字节魔数 + 4字节大小）
+    if (data.size() < 8) {
+        throw std::runtime_error("Invalid LZ4 data format: insufficient data length");
+    }
     
+    // 检查魔数 (0x184D2204) - 小端序
+    uint32_t magic = *reinterpret_cast<const uint32_t*>(data.data());
+    if (magic != 0x184D2204) {
+        throw std::runtime_error("Invalid LZ4 data format: magic number mismatch");
+    }
+    
+    // 读取解压后大小（4字节，小端序）
+    uint32_t uncompressedSize = *reinterpret_cast<const uint32_t*>(data.data() + 4);
+    
+    // 为解压后数据分配内存
+    std::vector<uint8_t> decompressedData(uncompressedSize);
+    
+    // 获取压缩数据（跳过8字节的头部）
+    const uint8_t* compressedData = data.data() + 8;
+    int compressedSize = static_cast<int>(data.size() - 8);
+    
+    // 解压数据
     int result = LZ4_decompress_safe(
-        reinterpret_cast<const char*>(data.data()),
+        reinterpret_cast<const char*>(compressedData),
         reinterpret_cast<char*>(decompressedData.data()),
-        static_cast<int>(data.size()),
-        decompressedSize
+        compressedSize,
+        uncompressedSize
     );
     
     if (result <= 0) {
-        throw std::runtime_error("LZ4解压失败");
+        throw std::runtime_error("LZ4 decompression failed");
     }
     
-    decompressedData.resize(result);
+    if (result != static_cast<int>(uncompressedSize)) {
+        throw std::runtime_error("LZ4 decompressed size mismatch: expected " + std::to_string(uncompressedSize) + " bytes, actual " + std::to_string(result) + " bytes");
+    }
+    
     return decompressedData;
 }
 
@@ -1004,7 +1108,7 @@ std::vector<uint8_t> AssetBundleProcessor::DecryptData(const std::vector<uint8_t
     // 确保数据长度是16字节的倍数（AES块大小）
     if (data.size() % 16 != 0) {
         EVP_CIPHER_CTX_free(ctx);
-        throw std::runtime_error("加密数据长度必须是16字节的倍数");
+        throw std::runtime_error("Encrypted data length must be a multiple of 16 bytes");
     }
     
     // 解密数据

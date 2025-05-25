@@ -11,15 +11,6 @@ using K4os.Compression.LZ4.Streams;
 using SevenZip.Compression.LZMA;
 using SevenZip;
 
-[assembly: System.Reflection.AssemblyCompanyAttribute("lhx077")]
-[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
-[assembly: System.Reflection.AssemblyDescriptionAttribute("Unity AssetBundle外部处理库")]
-[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
-[assembly: System.Reflection.AssemblyProductAttribute("ABProcessor")]
-[assembly: System.Reflection.AssemblyTitleAttribute("ABProcessor")]
-[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
-
 namespace ABProcessor
 {
     
