@@ -2,6 +2,8 @@
 
 ![Alt](https://repobeats.axiom.co/api/embed/6d91261460c5ad6d0889b6bd1e55d2948dca2f9f.svg "Repobeats analytics image")
 
+[![Star History Chart](https://api.star-history.com/svg?repos=lhx077/ABProcessor&type=Date)](https://www.star-history.com/#lhx077/ABProcessor&Date)
+
 ## 项目概述
 
 ABProcessor是一个用C#编写的库，用于在Unity外部处理AssetBundle(.ab)文件。该库提供了创建、压缩、加密和管理AssetBundle的功能，可以轻松集成到现有项目中。对于性能要求高的场景，ABProcessor还提供了C++原生方法支持，通过P/Invoke与C#交互。
