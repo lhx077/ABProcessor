@@ -10,6 +10,20 @@
     <Authors>lhx077</Authors>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <NoWarn>CS0579</NoWarn>
+    <Copyright>Apache 2.0 License</Copyright>
+    <PackageProjectUrl>https://github.com/lhx077/ABProcessor/</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/lhx077/ABProcessor/</RepositoryUrl>
+    <PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
+    <PackageLicenseExpression> Apache-2.0</PackageLicenseExpression>
+    <Title>ABProcessor</Title>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <DebugType>none</DebugType>
   </PropertyGroup>
 
 

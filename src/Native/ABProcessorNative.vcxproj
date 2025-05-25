@@ -85,6 +85,9 @@
     <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(VCPKG_ROOT)\installed\x64-windows-static\include;$(VCPKG_ROOT)\installed\x64-windows\include</IncludePath>
     <LibraryPath>$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(VCPKG_ROOT)\installed\x64-windows-static\lib;$(VCPKG_ROOT)\installed\x64-windows\lib</LibraryPath>
   </PropertyGroup>
+  <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
