@@ -426,8 +426,8 @@ public static void WriteUnityString(BinaryWriter writer, string value)
                     blocksInfoBytes = ms.ToArray();
                 }
                 
-                // 压缩块信息
-                byte[] compressedBlocksInfo = CompressData(blocksInfoBytes, UnityCompressionType.LZ4);
+                // 压缩块信息，并添加自定义头部
+                byte[] compressedBlocksInfo = CompressBlocksInfoLZ4WithHeader(blocksInfoBytes);
                 
                 // 压缩主数据
                 byte[] compressedData = CompressData(bundleData, _unityCompressionType);
@@ -962,14 +962,14 @@ public static void WriteUnityString(BinaryWriter writer, string value)
                 aes.Mode = CipherMode.CBC;
                 aes.Padding = PaddingMode.PKCS7;
                 
-                using (MemoryStream ms = new MemoryStream())
-                using (CryptoStream cs = new CryptoStream(ms, aes.CreateDecryptor(), CryptoStreamMode.Write))
-                {
-                    cs.Write(data, 0, data.Length);
-                    cs.FlushFinalBlock();
-                    return ms.ToArray();
-                }
+            using (MemoryStream ms = new MemoryStream())
+            using (CryptoStream cs = new CryptoStream(ms, aes.CreateDecryptor(), CryptoStreamMode.Write))
+            {
+                cs.Write(data, 0, data.Length);
+                cs.FlushFinalBlock();
+                return ms.ToArray();
             }
+        }
         }
         
         /// <summary>
@@ -981,6 +981,25 @@ public static void WriteUnityString(BinaryWriter writer, string value)
             {
                 byte[] hash = sha256.ComputeHash(data);
                 return BitConverter.ToUInt64(hash, 0);
+            }
+        }
+
+        /// <summary>
+        /// 使用LZ4压缩块信息并添加头部
+        /// </summary>
+        private byte[] CompressBlocksInfoLZ4WithHeader(byte[] data)
+        {
+            byte[] compressed = CompressLZ4(data);
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                // 写入4字节magic标识（例如 "LZ4H"）
+                writer.Write(Encoding.ASCII.GetBytes("LZ4H"));
+                // 写入未压缩数据长度（4字节）
+                writer.Write((uint)data.Length);
+                // 写入经过LZ4压缩的数据
+                writer.Write(compressed);
+                return ms.ToArray();
             }
         }
     }

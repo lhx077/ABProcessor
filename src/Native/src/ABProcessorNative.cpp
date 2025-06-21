@@ -200,6 +200,36 @@ public:
     std::vector<std::string> ExtractAssetBundle(const std::string& bundlePath, const std::string& extractPath);
 };
 
+// 辅助函数：LZ4压缩块信息并加头部
+static std::vector<uint8_t> CompressBlocksInfoLZ4WithHeader(const std::vector<uint8_t>& data) {
+    std::vector<uint8_t> compressed(LZ4_compressBound((int)data.size()));
+    int compressedSize = LZ4_compress_default(
+        reinterpret_cast<const char*>(data.data()),
+        reinterpret_cast<char*>(compressed.data()),
+        (int)data.size(),
+        (int)compressed.size()
+    );
+    if (compressedSize <= 0)
+        throw std::runtime_error("LZ4压缩块信息失败");
+
+    compressed.resize(compressedSize);
+
+    std::vector<uint8_t> result;
+    // 写入magic "LZ4H"
+    result.push_back('L');
+    result.push_back('Z');
+    result.push_back('4');
+    result.push_back('H');
+    // 写入未压缩大小（小端）
+    uint32_t uncompressedSize = static_cast<uint32_t>(data.size());
+    result.insert(result.end(),
+        reinterpret_cast<uint8_t*>(&uncompressedSize),
+        reinterpret_cast<uint8_t*>(&uncompressedSize) + 4);
+    // 写入压缩数据
+    result.insert(result.end(), compressed.begin(), compressed.end());
+    return result;
+}
+
 // C接口包装
 extern "C" {
 
@@ -684,18 +714,30 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
         blockInfo.Flags |= 0x1; // 设置加密标志
     }
     
-    // 序列化文件信息
-    std::vector<uint8_t> fileInfoData;
+    // 序列化块信息和文件信息
+    std::vector<uint8_t> blocksInfoBytes;
+    // 写入未压缩大小
+    uint32_t uncompressedSize = static_cast<uint32_t>(fileData.size());
+    blocksInfoBytes.resize(blocksInfoBytes.size() + sizeof(uint32_t));
+    std::memcpy(blocksInfoBytes.data() + blocksInfoBytes.size() - sizeof(uint32_t), &uncompressedSize, sizeof(uint32_t));
+    // 写入块数量
+    uint32_t blockCount = 1;
+    blocksInfoBytes.resize(blocksInfoBytes.size() + sizeof(uint32_t));
+    std::memcpy(blocksInfoBytes.data() + blocksInfoBytes.size() - sizeof(uint32_t), &blockCount, sizeof(uint32_t));
+    // 写入块信息
+    blockInfo.Serialize(blocksInfoBytes);
     // 写入文件数量
     uint32_t fileCount = static_cast<uint32_t>(fileInfos.size());
-    fileInfoData.resize(fileInfoData.size() + sizeof(uint32_t));
-    std::memcpy(fileInfoData.data() + fileInfoData.size() - sizeof(uint32_t), &fileCount, sizeof(uint32_t));
-    
+    blocksInfoBytes.resize(blocksInfoBytes.size() + sizeof(uint32_t));
+    std::memcpy(blocksInfoBytes.data() + blocksInfoBytes.size() - sizeof(uint32_t), &fileCount, sizeof(uint32_t));
     // 写入每个文件的信息
     for (const auto& fileInfo : fileInfos) {
-        fileInfo.Serialize(fileInfoData);
+        fileInfo.Serialize(blocksInfoBytes);
     }
-    
+
+    // 压缩块信息并加头部
+    std::vector<uint8_t> compressedBlocksInfo = CompressBlocksInfoLZ4WithHeader(blocksInfoBytes);
+
     // 创建头部
     UnityAssetBundleHeader header;
     header.BundleName = bundleName;
@@ -703,65 +745,46 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
     header.IsEncrypted = _useEncryption;
     header.CompressionType = _unityCompressionType;
     header.UnityVersion = _unityVersion;
-    
-    // 计算块信息大小
-    header.BlocksInfoSize = sizeof(uint32_t) + sizeof(BlockInfo) + fileInfoData.size();
-    
-    // 计算文件大小
+    header.BlocksInfoSize = static_cast<int64_t>(compressedBlocksInfo.size());
     header.FileSize = header.HeaderSize + header.BlocksInfoSize + compressedData.size();
-    
-    // 计算未压缩数据哈希
     header.UncompressedDataHash = CalculateHash(fileData);
-    
+
     // 序列化头部
     std::vector<uint8_t> headerData = header.SerializeHeader();
-    
+
     // 创建输出文件
     std::ofstream outputFile(bundlePath, std::ios::binary);
     if (!outputFile) {
         throw std::runtime_error("Unable to create output file: " + bundlePath);
     }
-    
+
     // 写入头部
     outputFile.write(reinterpret_cast<const char*>(headerData.data()), headerData.size());
-    
-    // 写入块数量（始终为1）
-    uint32_t blockCount = 1;
-    outputFile.write(reinterpret_cast<const char*>(&blockCount), sizeof(uint32_t));
-    
-    // 写入块信息
-    std::vector<uint8_t> blockInfoBuffer;
-    blockInfo.Serialize(blockInfoBuffer);
-    outputFile.write(reinterpret_cast<const char*>(blockInfoBuffer.data()), blockInfoBuffer.size());
-    
-    // 写入文件信息
-    outputFile.write(reinterpret_cast<const char*>(fileInfoData.data()), fileInfoData.size());
-    
+    // 写入块信息（LZ4压缩+头部）
+    outputFile.write(reinterpret_cast<const char*>(compressedBlocksInfo.data()), compressedBlocksInfo.size());
     // 写入压缩数据
     outputFile.write(reinterpret_cast<const char*>(compressedData.data()), compressedData.size());
-    
-    // 计算CRC
     outputFile.close();
+
+    // 计算CRC
     std::ifstream inputFile(bundlePath, std::ios::binary);
     if (!inputFile) {
         throw std::runtime_error("Unable to read file to calculate CRC: " + bundlePath);
     }
-    
     std::vector<uint8_t> fileContent(header.FileSize);
     inputFile.read(reinterpret_cast<char*>(fileContent.data()), fileContent.size());
     header.CRC = CalculateCRC32(fileContent);
     inputFile.close();
-    
+
     // 更新CRC
     std::ofstream updateFile(bundlePath, std::ios::binary | std::ios::in | std::ios::out);
     if (!updateFile) {
         throw std::runtime_error("Unable to update file CRC: " + bundlePath);
     }
-    
     headerData = header.SerializeHeader();
     updateFile.write(reinterpret_cast<const char*>(headerData.data()), headerData.size());
     updateFile.close();
-    
+
     return bundlePath;
 }
 
@@ -784,21 +807,36 @@ std::vector<std::string> AssetBundleProcessor::ExtractAssetBundle(const std::str
         file.read(reinterpret_cast<char*>(headerData.data()), headerData.size());
         UnityAssetBundleHeader header = UnityAssetBundleHeader::DeserializeHeader(headerData);
         
-        // 读取压缩的块信息
-        int blocksInfoOffset = header.HeaderSize; // 使用真实头部大小
-        file.seekg(blocksInfoOffset, std::ios::beg);
-        
-        std::vector<uint8_t> compressedBlocksInfo(header.BlocksInfoSize);
-        file.read(reinterpret_cast<char*>(compressedBlocksInfo.data()), compressedBlocksInfo.size());
-        
-        // 解压块信息 - 块信息通常使用LZ4压缩
-        std::vector<uint8_t> blocksInfoBytes = DecompressData(compressedBlocksInfo, UnityCompressionType::LZ4);
-        
+        // 读取magic
+        char magic[4];
+        file.read(magic, 4);
+        if (memcmp(magic, "LZ4H", 4) != 0)
+            throw std::runtime_error("块信息LZ4头部magic不匹配");
+
+        // 读取未压缩大小
+        uint32_t uncompressedSize = 0;
+        file.read(reinterpret_cast<char*>(&uncompressedSize), 4);
+
+        // 读取压缩数据
+        std::vector<uint8_t> compressedData(header.BlocksInfoSize - 8);
+        file.read(reinterpret_cast<char*>(compressedData.data()), compressedData.size());
+
+        // 解压
+        std::vector<uint8_t> blocksInfoBytes(uncompressedSize);
+        int decoded = LZ4_decompress_safe(
+            reinterpret_cast<const char*>(compressedData.data()),
+            reinterpret_cast<char*>(blocksInfoBytes.data()),
+            (int)compressedData.size(),
+            (int)uncompressedSize
+        );
+        if (decoded != (int)uncompressedSize)
+            throw std::runtime_error("LZ4解压块信息失败");
+
         // 从解压后的块信息中读取块和文件信息
         size_t offset = 0;
         
         // 读取未压缩大小
-        uint32_t uncompressedSize = *reinterpret_cast<const uint32_t*>(blocksInfoBytes.data() + offset);
+        uint32_t uncompressedSizeFromBlocks = *reinterpret_cast<const uint32_t*>(blocksInfoBytes.data() + offset);
         offset += sizeof(uint32_t);
         
         // 读取块数量
@@ -855,19 +893,19 @@ std::vector<std::string> AssetBundleProcessor::ExtractAssetBundle(const std::str
         }
         
         // 读取压缩数据块
-        int dataOffset = blocksInfoOffset + static_cast<int>(header.BlocksInfoSize);
+        int dataOffset = header.HeaderSize + static_cast<int>(header.BlocksInfoSize);
         file.seekg(dataOffset, std::ios::beg);
         
-        std::vector<uint8_t> compressedData(blocks[0].CompressedSize);
-        file.read(reinterpret_cast<char*>(compressedData.data()), compressedData.size());
+        std::vector<uint8_t> compressedDataBlock(blocks[0].CompressedSize);
+        file.read(reinterpret_cast<char*>(compressedDataBlock.data()), compressedDataBlock.size());
         
         // 如果数据已加密，则解密
         if (header.IsEncrypted && _useEncryption) {
-            compressedData = DecryptData(compressedData);
+            compressedDataBlock = DecryptData(compressedDataBlock);
         }
         
         // 解压数据
-        std::vector<uint8_t> bundleData = DecompressData(compressedData, header.CompressionType);
+        std::vector<uint8_t> bundleData = DecompressData(compressedDataBlock, header.CompressionType);
         
         // 验证解压后大小
         if (bundleData.size() != blocks[0].UncompressedSize) {
