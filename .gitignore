@@ -111,3 +111,5 @@ Desktop.ini
 # JetBrains Rider
 .idea/
 *.sln.iml
+
+build/

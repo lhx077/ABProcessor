@@ -141,6 +141,9 @@ private:
     UnityCompressionType _unityCompressionType;
     std::string _unityVersion;
     
+    // 块信息缓存
+    std::vector<BlockInfo> _blockInfoCache;
+    
     // 压缩数据
     std::vector<uint8_t> CompressData(const std::vector<uint8_t>& data, UnityCompressionType compressionType);
     
@@ -383,58 +386,66 @@ T AssetBundleProcessor::ReadValue(const std::vector<uint8_t>& data, size_t& offs
     return value;
 }
 
-// 序列化头部数据
-std::vector<uint8_t> UnityAssetBundleHeader::SerializeHeader() {
-    std::vector<uint8_t> result;
+// 序列化头部数据 - 完全匹配Unity原生格式
+std::vector<uint8_t> UnityAssetBundleHeader::SerializeHeader()
+{
+    std::vector<uint8_t> buffer;
     
-    // 写入签名
-    result.insert(result.end(), Signature.begin(), Signature.end());
+    // 写入标识符 (8字节) - 固定长度
+    std::vector<uint8_t> signatureBytes(8, 0);
+    std::copy(Signature.begin(), Signature.begin() + std::min(Signature.length(), size_t(8)), signatureBytes.begin());
+    buffer.insert(buffer.end(), signatureBytes.begin(), signatureBytes.end());
     
-    // 写入格式版本
-    result.resize(result.size() + sizeof(int32_t));
-    std::memcpy(result.data() + result.size() - sizeof(int32_t), &FormatVersion, sizeof(int32_t));
+    // 写入格式版本 (4字节)
+    uint8_t* formatVersionBytes = reinterpret_cast<uint8_t*>(&FormatVersion);
+    buffer.insert(buffer.end(), formatVersionBytes, formatVersionBytes + 4);
     
-    // 写入Unity版本
-    size_t unityVersionLength = UnityVersion.length();
-    result.push_back(static_cast<uint8_t>(unityVersionLength));
-    result.insert(result.end(), UnityVersion.begin(), UnityVersion.end());
+    // 写入Unity版本 (Unity使用特殊的字符串格式)
+    buffer.push_back(static_cast<uint8_t>(UnityVersion.length()));
+    buffer.insert(buffer.end(), UnityVersion.begin(), UnityVersion.end());
     
-    // 写入生成器版本
-    size_t generatorVersionLength = GeneratorVersion.length();
-    result.push_back(static_cast<uint8_t>(generatorVersionLength));
-    result.insert(result.end(), GeneratorVersion.begin(), GeneratorVersion.end());
+    // 写入生成器版本 (Unity使用特殊的字符串格式)
+    buffer.push_back(static_cast<uint8_t>(GeneratorVersion.length()));
+    buffer.insert(buffer.end(), GeneratorVersion.begin(), GeneratorVersion.end());
     
-    // 写入文件大小
-    result.resize(result.size() + sizeof(int64_t));
-    std::memcpy(result.data() + result.size() - sizeof(int64_t), &FileSize, sizeof(int64_t));
+    // 写入文件大小 (8字节)
+    uint8_t* fileSizeBytes = reinterpret_cast<uint8_t*>(&FileSize);
+    buffer.insert(buffer.end(), fileSizeBytes, fileSizeBytes + 8);
     
-    // 写入头部大小
-    result.resize(result.size() + sizeof(uint32_t));
-    std::memcpy(result.data() + result.size() - sizeof(uint32_t), &HeaderSize, sizeof(uint32_t));
+    // 写入头部大小 (4字节) - 使用固定值，确保一致性
+    uint32_t headerSize = 0x40;  // 固定64字节大小，与Unity标准一致
+    uint8_t* headerSizeBytes = reinterpret_cast<uint8_t*>(&headerSize);
+    buffer.insert(buffer.end(), headerSizeBytes, headerSizeBytes + 4);
     
-    // 写入CRC
-    result.resize(result.size() + sizeof(uint32_t));
-    std::memcpy(result.data() + result.size() - sizeof(uint32_t), &CRC, sizeof(uint32_t));
+    // 写入CRC (4字节)
+    uint8_t* crcBytes = reinterpret_cast<uint8_t*>(&CRC);
+    buffer.insert(buffer.end(), crcBytes, crcBytes + 4);
     
-    // 写入最小流式字节数
-    result.push_back(MinimumStreamedBytes);
+    // 写入最小流式字节数 (1字节)
+    buffer.push_back(MinimumStreamedBytes);
     
-    // 写入压缩类型
-    result.push_back(static_cast<uint8_t>(CompressionType));
+    // 写入压缩类型 (1字节)
+    buffer.push_back(static_cast<uint8_t>(CompressionType));
     
-    // 写入块信息大小
-    result.resize(result.size() + sizeof(int64_t));
-    std::memcpy(result.data() + result.size() - sizeof(int64_t), &BlocksInfoSize, sizeof(int64_t));
+    // 写入块信息大小 (8字节)
+    uint8_t* blocksInfoSizeBytes = reinterpret_cast<uint8_t*>(&BlocksInfoSize);
+    buffer.insert(buffer.end(), blocksInfoSizeBytes, blocksInfoSizeBytes + 8);
     
-    // 写入未压缩数据哈希
-    result.resize(result.size() + sizeof(uint64_t));
-    std::memcpy(result.data() + result.size() - sizeof(uint64_t), &UncompressedDataHash, sizeof(uint64_t));
+    // 写入未压缩数据哈希 (8字节)
+    uint8_t* hashBytes = reinterpret_cast<uint8_t*>(&UncompressedDataHash);
+    buffer.insert(buffer.end(), hashBytes, hashBytes + 8);
     
-    // 写入标志
-    result.resize(result.size() + sizeof(uint32_t));
-    std::memcpy(result.data() + result.size() - sizeof(uint32_t), &Flags, sizeof(uint32_t));
+    // 写入标志 (4字节) - Unity 2019.4+需要
+    uint8_t* flagsBytes = reinterpret_cast<uint8_t*>(&Flags);
+    buffer.insert(buffer.end(), flagsBytes, flagsBytes + 4);
     
-    return result;
+    // 确保头部为64字节
+    while (buffer.size() < 0x40)
+    {
+        buffer.push_back(0);
+    }
+    
+    return buffer;
 }
 
 // 从二进制数据解析头部
@@ -663,6 +674,10 @@ std::string AssetBundleProcessor::CreateAssetBundle(const std::string& bundleNam
     std::vector<uint8_t> compressedData = CompressData(fileData, _unityCompressionType);
     blockInfo.CompressedSize = static_cast<uint32_t>(compressedData.size());
     
+    // 更新块信息缓存
+    _blockInfoCache.clear();
+    _blockInfoCache.push_back(blockInfo);
+    
     // 如果需要加密，则加密数据
     if (_useEncryption) {
         compressedData = EncryptData(compressedData);
@@ -805,6 +820,10 @@ std::vector<std::string> AssetBundleProcessor::ExtractAssetBundle(const std::str
             
             blocks.push_back(block);
         }
+        
+        // 更新块信息缓存
+        _blockInfoCache.clear();
+        _blockInfoCache = blocks;
         
         // 读取文件数量
         uint32_t fileCount = *reinterpret_cast<const uint32_t*>(blocksInfoBytes.data() + offset);
@@ -966,24 +985,10 @@ std::vector<uint8_t> AssetBundleProcessor::CompressLZ4(const std::vector<uint8_t
         throw std::runtime_error("LZ4 compression failed");
     }
     
-    // 创建结果缓冲区，包含头部和压缩数据
-    // Unity LZ4格式: 魔数(4字节) + 未压缩大小(4字节) + 压缩数据
-    std::vector<uint8_t> result(8 + compressedSize);
+    // 调整大小为实际压缩后的大小
+    compressedBuffer.resize(compressedSize);
     
-    // 写入Unity LZ4魔数 (0x184D2204) - 小端序
-    result[0] = 0x04;
-    result[1] = 0x22;
-    result[2] = 0x4D;
-    result[3] = 0x18;
-    
-    // 写入未压缩大小（4字节，小端序）
-    uint32_t dataSize = static_cast<uint32_t>(data.size());
-    memcpy(result.data() + 4, &dataSize, sizeof(uint32_t));
-    
-    // 复制压缩数据
-    memcpy(result.data() + 8, compressedBuffer.data(), compressedSize);
-    
-    return result;
+    return compressedBuffer;
 }
 
 // 使用LZ4HC压缩数据
@@ -1005,54 +1010,32 @@ std::vector<uint8_t> AssetBundleProcessor::CompressLZ4HC(const std::vector<uint8
         throw std::runtime_error("LZ4HC compression failed");
     }
     
-    // 创建结果缓冲区，包含头部和压缩数据
-    // Unity LZ4格式: 魔数(4字节) + 未压缩大小(4字节) + 压缩数据
-    std::vector<uint8_t> result(8 + compressedSize);
+    // 调整大小为实际压缩后的大小
+    compressedBuffer.resize(compressedSize);
     
-    // 写入Unity LZ4魔数 (0x184D2204) - 小端序
-    result[0] = 0x04;
-    result[1] = 0x22;
-    result[2] = 0x4D;
-    result[3] = 0x18;
-    
-    // 写入未压缩大小（4字节，小端序）
-    uint32_t dataSize = static_cast<uint32_t>(data.size());
-    memcpy(result.data() + 4, &dataSize, sizeof(uint32_t));
-    
-    // 复制压缩数据
-    memcpy(result.data() + 8, compressedBuffer.data(), compressedSize);
-    
-    return result;
+    return compressedBuffer;
 }
 
 // 解压LZ4数据
 std::vector<uint8_t> AssetBundleProcessor::DecompressLZ4(const std::vector<uint8_t>& data) {
-    // 至少需要8字节的头部（4字节魔数 + 4字节大小）
-    if (data.size() < 8) {
-        throw std::runtime_error("Invalid LZ4 data format: insufficient data length");
+    // 从块信息中获取未压缩大小
+    uint32_t uncompressedSize = 0;
+    for (const auto& blockInfo : _blockInfoCache) {
+        uncompressedSize += blockInfo.UncompressedSize;
     }
     
-    // 检查魔数 (0x184D2204) - 小端序
-    uint32_t magic = *reinterpret_cast<const uint32_t*>(data.data());
-    if (magic != 0x184D2204) {
-        throw std::runtime_error("Invalid LZ4 data format: magic number mismatch");
+    if (uncompressedSize == 0) {
+        throw std::runtime_error("Cannot determine uncompressed size for LZ4 data");
     }
-    
-    // 读取解压后大小（4字节，小端序）
-    uint32_t uncompressedSize = *reinterpret_cast<const uint32_t*>(data.data() + 4);
     
     // 为解压后数据分配内存
     std::vector<uint8_t> decompressedData(uncompressedSize);
     
-    // 获取压缩数据（跳过8字节的头部）
-    const uint8_t* compressedData = data.data() + 8;
-    int compressedSize = static_cast<int>(data.size() - 8);
-    
     // 解压数据
     int result = LZ4_decompress_safe(
-        reinterpret_cast<const char*>(compressedData),
+        reinterpret_cast<const char*>(data.data()),
         reinterpret_cast<char*>(decompressedData.data()),
-        compressedSize,
+        static_cast<int>(data.size()),
         uncompressedSize
     );
     

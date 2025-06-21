@@ -54,7 +54,6 @@ namespace ABProcessor
         public uint Flags { get; set; } = 0; // Unity AssetBundle标志
         
         // 序列化头部数据 - 完全匹配Unity原生格式
-        // 序列化头部数据 - 完全匹配Unity原生格式
 public byte[] SerializeHeader()
 {
     using (MemoryStream ms = new MemoryStream())
@@ -78,9 +77,8 @@ public byte[] SerializeHeader()
         // 写入文件大小 (8字节)
         writer.Write(FileSize);
         
-        // 写入头部大小占位符 (4字节) - 稍后更新
-        long headerSizePosition = ms.Position;
-        writer.Write((uint)0); // 占位符
+                // 写入头部大小 (4字节) - 使用固定值，确保一致性
+                writer.Write((uint)0x40);  // 固定64字节大小，与Unity标准一致
         
         // 写入CRC (4字节)
         writer.Write(CRC);
@@ -100,19 +98,16 @@ public byte[] SerializeHeader()
         // 写入标志 (4字节) - Unity 2019.4+需要
         writer.Write(Flags);
         
-        // 计算并更新头部大小
-        uint actualHeaderSize = (uint)ms.Position;
-        ms.Position = headerSizePosition;
-        writer.Write(actualHeaderSize);
-        
-        // 更新实例中的HeaderSize
-        HeaderSize = actualHeaderSize;
+                // 确保头部为64字节
+                while (ms.Length < 0x40)
+                {
+                    writer.Write((byte)0);
+                }
         
         return ms.ToArray();
     }
 }
         
-        // 写入Unity格式的字符串
         // 写入Unity格式的字符串
 public static void WriteUnityString(BinaryWriter writer, string value)
 {
@@ -294,6 +289,8 @@ public static void WriteUnityString(BinaryWriter writer, string value)
         private byte[] _encryptionKey;
         private UnityCompressionType _unityCompressionType;
         private string _unityVersion;
+        // 添加块信息缓存
+        private List<BlockInfo> _blockInfoCache = new List<BlockInfo>();
         
         /// <summary>
         /// 获取或设置当前使用的压缩级别
@@ -409,6 +406,10 @@ public static void WriteUnityString(BinaryWriter writer, string value)
                     // 压缩数据
                     byte[] compressedBundleData = this.CompressData(bundleData, _unityCompressionType);
                     blockInfo.CompressedSize = (uint)compressedBundleData.Length;
+                    
+                    // 更新块信息缓存
+                    _blockInfoCache.Clear();
+                    _blockInfoCache.Add(blockInfo);
                     
                     // 写入块信息
                     blockInfo.Serialize(writer);
@@ -529,12 +530,57 @@ public static void WriteUnityString(BinaryWriter writer, string value)
                 }
                 
                 // 读取压缩的块信息
-                int blocksInfoOffset = 128; // 头部大小估计
+                int blocksInfoOffset = (int)header.HeaderSize; // 使用头部大小
+                Console.WriteLine($"头部大小: {header.HeaderSize}, 块信息大小: {header.BlocksInfoSize}");
+                Console.WriteLine($"文件总大小: {bundleBytes.Length}, 块信息偏移: {blocksInfoOffset}");
+
+                // 检查偏移量是否有效
+                if (blocksInfoOffset < 0 || blocksInfoOffset >= bundleBytes.Length)
+                {
+                    throw new InvalidDataException($"无效的块信息偏移量: {blocksInfoOffset}，文件总大小: {bundleBytes.Length}");
+                }
+
+                // 检查块信息大小是否有效
+                if (header.BlocksInfoSize <= 0 || blocksInfoOffset + header.BlocksInfoSize > bundleBytes.Length)
+                {
+                    throw new InvalidDataException($"无效的块信息大小: {header.BlocksInfoSize}，可用大小: {bundleBytes.Length - blocksInfoOffset}");
+                }
+
                 byte[] compressedBlocksInfo = new byte[header.BlocksInfoSize];
                 Array.Copy(bundleBytes, blocksInfoOffset, compressedBlocksInfo, 0, (int)header.BlocksInfoSize);
                 
-                // 解压块信息
-                byte[] blocksInfoBytes = DecompressData(compressedBlocksInfo, UnityCompressionType.LZ4);
+                // 解压块信息 - 块信息通常使用LZ4压缩
+                // 使用LZMA解压方法，它不需要预先知道未压缩大小
+                byte[] blocksInfoBytes;
+                if (header.FormatVersion >= 6)
+                {
+                    // Unity 5.3+使用LZ4压缩块信息
+                    // 我们不知道确切的未压缩大小，但可以估计一个足够大的值
+                    using (MemoryStream ms = new MemoryStream(compressedBlocksInfo))
+                    {
+                        // 读取LZ4头部
+                        byte[] magic = new byte[4];
+                        ms.Read(magic, 0, 4);
+                        
+                        // 读取未压缩大小
+                        byte[] sizeBytes = new byte[4];
+                        ms.Read(sizeBytes, 0, 4);
+                        int uncompressedSize = BitConverter.ToInt32(sizeBytes, 0);
+                        
+                        // 读取压缩数据
+                        byte[] compressedData = new byte[ms.Length - ms.Position];
+                        ms.Read(compressedData, 0, compressedData.Length);
+                        
+                        // 解压数据
+                        blocksInfoBytes = new byte[uncompressedSize];
+                        LZ4Codec.Decode(compressedData, 0, compressedData.Length, blocksInfoBytes, 0, uncompressedSize);
+                    }
+                }
+                else
+                {
+                    // 旧版Unity使用LZMA压缩块信息
+                    blocksInfoBytes = DecompressLZMA(compressedBlocksInfo);
+                }
                 
                 // 解析块信息
                 List<BlockInfo> blocks = new List<BlockInfo>();
@@ -555,6 +601,17 @@ public static void WriteUnityString(BinaryWriter writer, string value)
                         blocks.Add(BlockInfo.Deserialize(reader));
                     }
                     
+                    // 更新块信息缓存
+                    _blockInfoCache.Clear();
+                    _blockInfoCache.AddRange(blocks);
+                    
+                    // 计算总未压缩大小
+                    uint totalUncompressedSize = 0;
+                    foreach (var block in blocks)
+                    {
+                        totalUncompressedSize += block.UncompressedSize;
+                    }
+                    
                     // 读取文件数量
                     uint fileCount = reader.ReadUInt32();
                     
@@ -562,38 +619,54 @@ public static void WriteUnityString(BinaryWriter writer, string value)
                     for (int i = 0; i < fileCount; i++)
                     {
                         fileInfos.Add(AssetBundleFileInfo.Deserialize(reader));
-                    }
                 }
                 
-                // 读取压缩的数据
+                    // 读取压缩数据
                 int dataOffset = blocksInfoOffset + (int)header.BlocksInfoSize;
                 byte[] compressedData = new byte[bundleBytes.Length - dataOffset];
                 Array.Copy(bundleBytes, dataOffset, compressedData, 0, compressedData.Length);
                 
-                // 如果数据已加密，先解密
-                if (header.IsEncrypted && _encryptionKey != null)
+                    // 如果数据被加密，先解密
+                    if (header.IsEncrypted && _useEncryption && _encryptionKey != null)
                 {
                     compressedData = DecryptData(compressedData);
                 }
                 
-                // 解压数据
-                byte[] bundleData = DecompressData(compressedData, header.CompressionType);
+                    // 根据压缩类型解压数据
+                    byte[] bundleData;
+                    switch (header.CompressionType)
+                    {
+                        case UnityCompressionType.LZMA:
+                            bundleData = DecompressLZMA(compressedData);
+                            break;
+                        case UnityCompressionType.LZ4:
+                        case UnityCompressionType.LZ4HC:
+                            bundleData = new byte[totalUncompressedSize];
+                            LZ4Codec.Decode(compressedData, 0, compressedData.Length, bundleData, 0, (int)totalUncompressedSize);
+                            break;
+                        case UnityCompressionType.None:
+                        default:
+                            bundleData = compressedData;
+                            break;
+                    }
                 
                 // 提取文件
                 foreach (var fileInfo in fileInfos)
                 {
-                    string extractFilePath = Path.Combine(extractPath, fileInfo.Path);
+                        string outputPath = Path.Combine(extractPath, fileInfo.Path);
                     
                     // 确保目录存在
-                    Directory.CreateDirectory(Path.GetDirectoryName(extractFilePath));
+                        Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
                     
                     // 提取文件数据
                     byte[] fileData = new byte[fileInfo.Size];
                     Array.Copy(bundleData, (long)fileInfo.Offset, fileData, 0, (long)fileInfo.Size);
                     
                     // 写入文件
-                    File.WriteAllBytes(extractFilePath, fileData);
-                    extractedFiles.Add(extractFilePath);
+                        File.WriteAllBytes(outputPath, fileData);
+                        
+                        extractedFiles.Add(fileInfo.Path);
+                    }
                 }
                 
                 return extractedFiles;
@@ -631,8 +704,9 @@ public static void WriteUnityString(BinaryWriter writer, string value)
         /// </summary>
         /// <param name="data">要解压的数据</param>
         /// <param name="compressionType">压缩类型</param>
+        /// <param name="uncompressedSize">未压缩大小（可选）</param>
         /// <returns>解压后的数据</returns>
-        private byte[] DecompressData(byte[] data, UnityCompressionType compressionType)
+        private byte[] DecompressData(byte[] data, UnityCompressionType compressionType, uint uncompressedSize = 0)
         {
             switch (compressionType)
             {
@@ -640,7 +714,7 @@ public static void WriteUnityString(BinaryWriter writer, string value)
                     return DecompressLZMA(data);
                 case UnityCompressionType.LZ4:
                 case UnityCompressionType.LZ4HC:
-                    return DecompressLZ4(data);
+                    return DecompressLZ4(data, uncompressedSize);
                 case UnityCompressionType.None:
                 default:
                     return data;
@@ -765,21 +839,12 @@ public static void WriteUnityString(BinaryWriter writer, string value)
         {
             using (MemoryStream outStream = new MemoryStream())
             {
-                // Unity LZ4格式: 魔数(4字节) + 未压缩大小(4字节) + 压缩数据
-                
-                // 写入Unity LZ4魔数 (0x184D2204)
-                outStream.WriteByte(0x04);
-                outStream.WriteByte(0x22);
-                outStream.WriteByte(0x4D);
-                outStream.WriteByte(0x18);
-                
-                // 写入解压后大小（4字节，小端序）
-                byte[] sizeBytes = BitConverter.GetBytes(data.Length);
-                outStream.Write(sizeBytes, 0, 4);
-                
-                // 使用LZ4压缩数据（Unity使用默认压缩级别）
+                // 对于Unity AssetBundle，LZ4压缩数据不需要特殊的魔数和头部
+                // 直接进行LZ4压缩
                 byte[] targetBuffer = new byte[LZ4Codec.MaximumOutputSize(data.Length)];
                 int compressedSize = LZ4Codec.Encode(data, 0, data.Length, targetBuffer, 0, targetBuffer.Length, LZ4Level.L00_FAST);
+                
+                // 只写入压缩后的数据，不包含多余的魔数和大小
                 outStream.Write(targetBuffer, 0, compressedSize);
                 
                 return outStream.ToArray();
@@ -793,21 +858,12 @@ public static void WriteUnityString(BinaryWriter writer, string value)
         {
             using (MemoryStream outStream = new MemoryStream())
             {
-                // Unity LZ4格式: 魔数(4字节) + 未压缩大小(4字节) + 压缩数据
-                
-                // 写入Unity LZ4魔数 (0x184D2204)
-                outStream.WriteByte(0x04);
-                outStream.WriteByte(0x22);
-                outStream.WriteByte(0x4D);
-                outStream.WriteByte(0x18);
-                
-                // 写入解压后大小（4字节，小端序）
-                byte[] sizeBytes = BitConverter.GetBytes(data.Length);
-                outStream.Write(sizeBytes, 0, 4);
-                
-                // 使用LZ4HC压缩数据（Unity使用最高压缩级别）
+                // 对于Unity AssetBundle，LZ4压缩数据不需要特殊的魔数和头部
+                // 直接进行LZ4HC压缩
                 byte[] targetBuffer = new byte[LZ4Codec.MaximumOutputSize(data.Length)];
                 int compressedSize = LZ4Codec.Encode(data, 0, data.Length, targetBuffer, 0, targetBuffer.Length, LZ4Level.L12_MAX);
+                
+                // 只写入压缩后的数据，不包含多余的魔数和大小
                 outStream.Write(targetBuffer, 0, compressedSize);
                 
                 return outStream.ToArray();
@@ -817,63 +873,21 @@ public static void WriteUnityString(BinaryWriter writer, string value)
         /// <summary>
         /// 解压LZ4数据 - 匹配Unity的LZ4解压实现
         /// </summary>
-        private byte[] DecompressLZ4(byte[] data)
+        private byte[] DecompressLZ4(byte[] data, uint uncompressedSize)
         {
-            using (MemoryStream inStream = new MemoryStream(data))
+            if (uncompressedSize == 0)
             {
-                // 验证魔数
-                byte[] magic = new byte[4];
-                inStream.Read(magic, 0, 4);
-                uint magicValue = BitConverter.ToUInt32(magic, 0);
-                if (magicValue != 0x184D2204)
-                    throw new InvalidDataException("LZ4数据格式无效：魔数不匹配");
-                
-                // 读取解压后大小
-                byte[] sizeBytes = new byte[4];
-                inStream.Read(sizeBytes, 0, 4);
-                int uncompressedSize = BitConverter.ToInt32(sizeBytes, 0);
-                
-                // 读取压缩数据
-                byte[] compressedData = new byte[inStream.Length - inStream.Position];
-                inStream.Read(compressedData, 0, compressedData.Length);
+                throw new InvalidDataException("无法确定LZ4数据的未压缩大小");
+            }
                 
                 // 解压数据
                 byte[] uncompressedData = new byte[uncompressedSize];
-                int decodedSize = LZ4Codec.Decode(compressedData, 0, compressedData.Length, uncompressedData, 0, uncompressedSize);
+            int decodedSize = LZ4Codec.Decode(data, 0, data.Length, uncompressedData, 0, (int)uncompressedSize);
                 
                 if (decodedSize != uncompressedSize)
                     throw new InvalidDataException($"LZ4解压后大小不匹配：预期{uncompressedSize}字节，实际{decodedSize}字节");
                 
                 return uncompressedData;
-            }
-        }
-
-        /// <summary>
-/// 使用LZ4压缩数据 - 标准压缩模式
-/// </summary>
-private byte[] CompressLZ4Standard(byte[] data)
-{
-    using (MemoryStream outStream = new MemoryStream())
-    {
-        // Unity LZ4标准格式: 魔数(4字节) + 未压缩大小(4字节) + 压缩数据
-        
-        // 写入Unity LZ4魔数 (0x184D2204)
-        outStream.WriteByte(0x04);
-        outStream.WriteByte(0x22);
-        outStream.WriteByte(0x4D);
-        outStream.WriteByte(0x18);
-        
-        // 写入解压后大小（4字节，小端序）
-        byte[] sizeBytes = BitConverter.GetBytes(data.Length);
-        outStream.Write(sizeBytes, 0, 4);
-        
-        // 使用标准LZ4压缩（中等压缩级别，平衡速度和压缩比）
-        byte[] targetBuffer = new byte[LZ4Codec.MaximumOutputSize(data.Length)];
-        int compressedSize = LZ4Codec.Encode(data, 0, data.Length, targetBuffer, 0, targetBuffer.Length, LZ4Level.L06_HC);
-        outStream.Write(targetBuffer, 0, compressedSize);
-        
-        return outStream.ToArray();
-    }
 }
         
         /// <summary>
@@ -907,7 +921,6 @@ private byte[] CompressLZ4Standard(byte[] data)
             
             return ~crc;
         }
-
 
         /// <summary>
         /// 加密数据
@@ -958,8 +971,6 @@ private byte[] CompressLZ4Standard(byte[] data)
                 }
             }
         }
-        
-
         
         /// <summary>
         /// 计算数据哈希值
