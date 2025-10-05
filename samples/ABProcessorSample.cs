@@ -18,6 +18,13 @@ namespace ABProcessor.Samples
             Console.WriteLine("ABProcessor示例程序 - Unity AssetBundle外部处理工具");
             Console.WriteLine("=============================================");
             
+            // 如果传入了/test参数，则运行测试Issue的代码
+            if (args.Length > 0 && args[0] == "/test")
+            {
+                TestReportedIssue();
+                return;
+            }
+            
             // 创建临时目录用于测试
             string tempDir = Path.Combine(Path.GetTempPath(), "ABProcessorTest");
             string outputDir = Path.Combine(tempDir, "Output");
@@ -237,6 +244,97 @@ string jsonContent = "{\n   \"name\": \"ABProcessor\",\n   \"version\": \"1.0.0\
             
             Console.WriteLine($"解包加密的AssetBundle: {Path.GetFileName(bundlePath)}");
             Console.WriteLine($"提取文件数: {extractedFiles.Count}");
+        }
+
+        /// <summary>
+        /// 测试报告的Issue - 解决LZ4数据格式魔数不匹配问题
+        /// </summary>
+        private static void TestReportedIssue()
+        {
+            Console.WriteLine("\n测试报告的Issue - LZ4魔数不匹配问题");
+            Console.WriteLine("====================================");
+            
+            // 设置输出和提取路径
+            string outputPath = "D:/Output";
+            string extractPath = "D:/Extract";
+            
+            // 确保目录存在
+            if (!Directory.Exists(outputPath))
+                Directory.CreateDirectory(outputPath);
+            if (!Directory.Exists(extractPath))
+                Directory.CreateDirectory(extractPath);
+
+            try
+            {
+                // 创建测试文件
+                List<string> testFiles = new List<string>();
+                
+                string testFile1 = Path.Combine(outputPath, "test1.txt");
+                File.WriteAllText(testFile1, "这是测试文件1");
+                testFiles.Add(testFile1);
+                
+                string testFile2 = Path.Combine(outputPath, "test2.txt");
+                File.WriteAllText(testFile2, "这是测试文件2的内容\n这是第二行");
+                testFiles.Add(testFile2);
+                
+                string testFile3 = Path.Combine(outputPath, "test3.txt");
+                File.WriteAllText(testFile3, new string('A', 1024)); // 创建一个较大的文件
+                testFiles.Add(testFile3);
+                
+                Console.WriteLine($"创建了 {testFiles.Count} 个测试文件");
+
+                // 初始化处理器
+                AssetBundleProcessor processor = new AssetBundleProcessor(
+                    outputPath: outputPath,
+                    compressionLevel: System.IO.Compression.CompressionLevel.Optimal,
+                    useEncryption: false,
+                    unityCompressionType: UnityCompressionType.LZ4,
+                    unityVersion: "2019.4.0f1"
+                );
+
+                // 创建AssetBundle
+                string bundlePath = processor.CreateAssetBundle("test_bundle", testFiles);
+                Console.WriteLine($"AssetBundle已创建: {bundlePath}");
+
+                // 解包AssetBundle
+                List<string> extractedFiles = processor.ExtractAssetBundle(
+                    bundlePath,
+                    extractPath
+                );
+
+                Console.WriteLine($"成功解包了 {extractedFiles.Count} 个文件:");
+                foreach (var file in extractedFiles)
+                {
+                    Console.WriteLine($"- {file}");
+                    
+                    // 验证文件内容是否匹配
+                    string originalPath = Path.Combine(outputPath, file);
+                    string extractedPath = Path.Combine(extractPath, file);
+                    
+                    byte[] originalContent = File.ReadAllBytes(originalPath);
+                    byte[] extractedContent = File.ReadAllBytes(extractedPath);
+                    
+                    bool contentMatches = originalContent.Length == extractedContent.Length;
+                    if (contentMatches)
+                    {
+                        for (int i = 0; i < originalContent.Length; i++)
+                        {
+                            if (originalContent[i] != extractedContent[i])
+                            {
+                                contentMatches = false;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    Console.WriteLine($"  内容验证: {(contentMatches ? "通过" : "失败")}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"发生错误: {ex.Message}");
+                Console.WriteLine($"详细信息: {ex}");
+            }
         }
     }
 }
