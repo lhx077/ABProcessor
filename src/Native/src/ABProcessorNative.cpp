@@ -442,9 +442,12 @@ std::vector<uint8_t> UnityAssetBundleHeader::SerializeHeader()
     uint8_t* fileSizeBytes = reinterpret_cast<uint8_t*>(&FileSize);
     buffer.insert(buffer.end(), fileSizeBytes, fileSizeBytes + 8);
     
-    // 写入头部大小 (4字节) - 使用固定值，确保一致性
-    uint32_t headerSize = 0x40;  // 固定64字节大小，与Unity标准一致
-    uint8_t* headerSizeBytes = reinterpret_cast<uint8_t*>(&headerSize);
+    // 计算并写入实际的头部大小
+    // 到目前为止已经写入的字节数 + 剩余要写入的字节数
+    size_t currentPosition = buffer.size();
+    // 剩余字段: HeaderSize(4) + CRC(4) + MinimumStreamedBytes(1) + CompressionType(1) + BlocksInfoSize(8) + UncompressedDataHash(8) + Flags(4) = 30字节
+    uint32_t actualHeaderSize = static_cast<uint32_t>(currentPosition + 30);
+    uint8_t* headerSizeBytes = reinterpret_cast<uint8_t*>(&actualHeaderSize);
     buffer.insert(buffer.end(), headerSizeBytes, headerSizeBytes + 4);
     
     // 写入CRC (4字节)
@@ -468,12 +471,6 @@ std::vector<uint8_t> UnityAssetBundleHeader::SerializeHeader()
     // 写入标志 (4字节) - Unity 2019.4+需要
     uint8_t* flagsBytes = reinterpret_cast<uint8_t*>(&Flags);
     buffer.insert(buffer.end(), flagsBytes, flagsBytes + 4);
-    
-    // 确保头部为64字节
-    while (buffer.size() < 0x40)
-    {
-        buffer.push_back(0);
-    }
     
     return buffer;
 }
@@ -806,6 +803,9 @@ std::vector<std::string> AssetBundleProcessor::ExtractAssetBundle(const std::str
         std::vector<uint8_t> headerData(128); // 头部大小最大读取128字节，确保足够
         file.read(reinterpret_cast<char*>(headerData.data()), headerData.size());
         UnityAssetBundleHeader header = UnityAssetBundleHeader::DeserializeHeader(headerData);
+        
+        // 定位到块信息的起始位置（紧跟在头部后）
+        file.seekg(header.HeaderSize, std::ios::beg);
         
         // 读取magic
         char magic[4];
