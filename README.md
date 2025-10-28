@@ -1,6 +1,6 @@
 # ABProcessor - Unity AssetBundle外部处理库
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lhx077/PDFImageConverter)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lhx077/ABProcessor)
 
 ![Alt](https://repobeats.axiom.co/api/embed/6d91261460c5ad6d0889b6bd1e55d2948dca2f9f.svg "Repobeats analytics image")
 
